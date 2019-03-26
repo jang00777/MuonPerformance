@@ -71,6 +71,7 @@
 #include "TLorentzVector.h"
 #include "TTree.h"
 #include "TDatabasePDG.h"
+#include <tuple>
 
 using namespace std;
 using namespace edm;
@@ -90,6 +91,12 @@ private:
 
   void initValue();
 
+  enum detType {DET_NONE = 0, DET_ME0, DET_GEM, DET_CSC, DET_DT, DET_RPC};
+
+  bool isSimTrackGood(const SimTrack & , int = -1, detType = DET_NONE);
+  std::tuple<SimTrack, unsigned int, unsigned int, int> matchSimHitToSimTrack(const PSimHit & sh, const edm::SimTrackContainer & sim_track, int pdg=-1, detType = DET_NONE); 
+  int getMotherPdgId(const SimTrack & trk, const edm::PSimHitContainer & sim_hit, const edm::SimVertexContainer & sim_vertex);
+
   // ----------member data ---------------------------
   edm::ParameterSet cfg_;
   edm::EDGetToken ME0SimHitsToken_;
@@ -99,18 +106,21 @@ private:
   
   edm::Service<TFileService> fs;
 
+  float GEM_minEta_ = 1.5; float GEM_maxEta_ = 2.5;
+  float ME0_minEta_ = 1.9; float ME0_maxEta_ = 3.;
+
   TTree *t_event;
   int b_nME0SimHits, b_nGEMSimHits;
 
   /* ME */
   TTree *t_ME0_simhit;
-  int   b_ME0_SimHit_region, b_ME0_SimHit_chamber, b_ME0_SimHit_layer, b_ME0_SimHit_etaPartition, b_ME0_SimHit_pdgId;
-  float b_ME0_SimHit_pt,     b_ME0_SimHit_eta,     b_ME0_SimHit_phi;
+  int   b_ME0_SimHit_region, b_ME0_SimHit_chamber, b_ME0_SimHit_layer, b_ME0_SimHit_etaPartition, b_ME0_SimHit_pdgId, b_ME0_SimHit_momPdgId;
+  float b_ME0_SimHit_pt,     b_ME0_SimHit_eta,     b_ME0_SimHit_phi,   b_ME0_SimHit_E;
 
   /* GEM */
   TTree *t_GEM_simhit;
-  int   b_GEM_SimHit_region, b_GEM_SimHit_station, b_GEM_SimHit_ring, b_GEM_SimHit_chamber, b_GEM_SimHit_layer, b_GEM_SimHit_etaPartition, b_GEM_SimHit_pdgId;
-  float b_GEM_SimHit_pt,     b_GEM_SimHit_eta,     b_GEM_SimHit_phi; 
+  int   b_GEM_SimHit_region, b_GEM_SimHit_station, b_GEM_SimHit_ring, b_GEM_SimHit_chamber, b_GEM_SimHit_layer, b_GEM_SimHit_etaPartition, b_GEM_SimHit_pdgId, b_GEM_SimHit_momPdgId;
+  float b_GEM_SimHit_pt,     b_GEM_SimHit_eta,     b_GEM_SimHit_phi,  b_GEM_SimHit_E; 
 
 };
 
@@ -132,9 +142,11 @@ MuonSimAnalyser::MuonSimAnalyser(const edm::ParameterSet& iConfig)
   /*ME0*/
   t_ME0_simhit = fs->make<TTree>("ME0_SimHit", "ME0_SimHit");
   t_ME0_simhit->Branch("SimHit_pdgId",        &b_ME0_SimHit_pdgId,        "SimHit_pdgId/I");
+  t_ME0_simhit->Branch("SimHit_momPdgId",     &b_ME0_SimHit_momPdgId,     "SimHit_momPdgId/I");
   t_ME0_simhit->Branch("SimHit_pt",           &b_ME0_SimHit_pt,           "SimHit_pt/F");
   t_ME0_simhit->Branch("SimHit_eta",          &b_ME0_SimHit_eta,          "SimHit_eta/F");
   t_ME0_simhit->Branch("SimHit_phi",          &b_ME0_SimHit_phi,          "SimHit_phi/F");
+  t_ME0_simhit->Branch("SimHit_E",            &b_ME0_SimHit_E,            "SimHit_E/F");
   t_ME0_simhit->Branch("SimHit_region",       &b_ME0_SimHit_region,       "SimHit_region/I");
   t_ME0_simhit->Branch("SimHit_chamber",      &b_ME0_SimHit_chamber,      "SimHit_chaber/I");
   t_ME0_simhit->Branch("SimHit_layer",        &b_ME0_SimHit_layer,        "SimHit_layer/I");
@@ -143,9 +155,11 @@ MuonSimAnalyser::MuonSimAnalyser(const edm::ParameterSet& iConfig)
   /*GEM*/
   t_GEM_simhit = fs->make<TTree>("GEM_SimHit", "GEM_SimHit");
   t_GEM_simhit->Branch("SimHit_pdgId",        &b_GEM_SimHit_pdgId,        "SimHit_pdgId/I");
+  t_GEM_simhit->Branch("SimHit_momPdgId",     &b_GEM_SimHit_momPdgId,     "SimHit_momPdgId/I");
   t_GEM_simhit->Branch("SimHit_pt",           &b_GEM_SimHit_pt,           "SimHit_pt/F");
   t_GEM_simhit->Branch("SimHit_eta",          &b_GEM_SimHit_eta,          "SimHit_eta/F");
   t_GEM_simhit->Branch("SimHit_phi",          &b_GEM_SimHit_phi,          "SimHit_phi/F");
+  t_GEM_simhit->Branch("SimHit_E",            &b_GEM_SimHit_E,            "SimHit_E/F");
   t_GEM_simhit->Branch("SimHit_region",       &b_GEM_SimHit_region,       "SimHit_region/I");
   t_GEM_simhit->Branch("SimHit_station",      &b_GEM_SimHit_station,      "SimHit_station/I");
   t_GEM_simhit->Branch("SimHit_ring",         &b_GEM_SimHit_ring,         "SimHit_ring/I");
@@ -162,10 +176,15 @@ MuonSimAnalyser::~MuonSimAnalyser()
 void
 MuonSimAnalyser::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup)
 {
+  /* ME0 Geometry */
+  edm::ESHandle<ME0Geometry> hME0Geom;
+  iSetup.get<MuonGeometryRecord>().get(hME0Geom);
+  const ME0Geometry* ME0Geometry_ = &*hME0Geom;
+
   /* GEM Geometry */
-  //edm::ESHandle<GEMGeometry> hGEMGeom;
-  //iSetup.get<MuonGeometryRecord>().get(hGEMGeom);
-  //const GEMGeometry* GEMGeometry_ = &*hGEMGeom;
+  edm::ESHandle<GEMGeometry> hGEMGeom;
+  iSetup.get<MuonGeometryRecord>().get(hGEMGeom);
+  const GEMGeometry* GEMGeometry_ = &*hGEMGeom;
 
   edm::Handle<edm::PSimHitContainer> ME0SimHits;
   edm::Handle<edm::PSimHitContainer> GEMSimHits;
@@ -179,24 +198,36 @@ MuonSimAnalyser::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup
 
   initValue();
 
+  const edm::SimTrackContainer & sim_tracks = *simTracks.product();
+  const edm::SimVertexContainer & sim_vertices = *simVertices.product();
+
+
   /* ME0 */
   if (ME0SimHits.isValid()) {
     const edm::PSimHitContainer & ME0_sim_hits = *ME0SimHits.product();
     for (auto& sh : ME0_sim_hits){
-      ME0DetId det_id = sh.detUnitId();
-      auto vec = sh.momentumAtEntry();
+      ME0DetId det_id(sh.detUnitId());
+      auto vec                   = sh.momentumAtEntry();
+      auto shLp                  = sh.localPosition();
+      const BoundPlane & surface = ME0Geometry_->idToDet(det_id)->surface();
+      auto shGp                  = surface.toGlobal(shLp);
+
       b_ME0_SimHit_pdgId        = sh.particleType();
+      auto sim_track_tuple = matchSimHitToSimTrack(sh, sim_tracks);
+      b_ME0_SimHit_momPdgId = getMotherPdgId(std::get<0>(sim_track_tuple), ME0_sim_hits, sim_vertices);
+      std::cout << " >>>>>>> TUPLE : [ " << std::get<0>(sim_track_tuple) << " ] / [ " << std::get<1>(sim_track_tuple) << " ] / [ " << std::get<2>(sim_track_tuple) << " ] / [ " << std::get<3>(sim_track_tuple) << " ] " <<  std::endl;
 
       TDatabasePDG *pdg = TDatabasePDG::Instance();
       if (auto particle_pdg = pdg->GetParticle(b_ME0_SimHit_pdgId)) {
-        std::cout << particle_pdg->GetName() << " " << b_ME0_SimHit_pdgId << std::endl;
+        std::cout << particle_pdg->GetName() << " " << b_ME0_SimHit_pdgId << " mom pdg : " << b_ME0_SimHit_momPdgId << std::endl;
       } else {
         std::cout << "Cannot understand!!! " << b_ME0_SimHit_pdgId << std::endl;
       }
 
       b_ME0_SimHit_pt           = vec.perp();
-      b_ME0_SimHit_eta          = vec.eta();
-      b_ME0_SimHit_phi          = sh.phiAtEntry();
+      b_ME0_SimHit_eta          = shGp.eta();
+      b_ME0_SimHit_phi          = shGp.phi();
+      b_ME0_SimHit_E            = sh.pabs();
 
       b_ME0_SimHit_region       = det_id.region();
       b_ME0_SimHit_chamber      = det_id.chamber();
@@ -213,21 +244,29 @@ MuonSimAnalyser::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup
   if (GEMSimHits.isValid()) {
     const edm::PSimHitContainer & GEM_sim_hits = *GEMSimHits.product();
     for (auto& sh : GEM_sim_hits){
-      GEMDetId det_id = sh.detUnitId();
-      auto vec = sh.momentumAtEntry();
+      GEMDetId det_id(sh.detUnitId());
+      auto vec                   = sh.momentumAtEntry();
+      auto shLp                  = sh.localPosition();
+      const BoundPlane & surface = GEMGeometry_->idToDet(det_id)->surface();
+      auto shGp                  = surface.toGlobal(shLp);
+      
       b_GEM_SimHit_pdgId        = sh.particleType();
-  
+      auto sim_track_tuple = matchSimHitToSimTrack(sh, sim_tracks);
+      b_GEM_SimHit_momPdgId = getMotherPdgId(std::get<0>(sim_track_tuple), GEM_sim_hits, sim_vertices);
+      std::cout << " >>>>>>> TUPLE : [ " << std::get<0>(sim_track_tuple) << " ] / [ " << std::get<1>(sim_track_tuple) << " ] / [ " << std::get<2>(sim_track_tuple) << " ] / [ " << std::get<3>(sim_track_tuple) << " ] " <<  std::endl;
+ 
       TDatabasePDG *pdg = TDatabasePDG::Instance();
       if (auto particle_pdg = pdg->GetParticle(b_GEM_SimHit_pdgId)) {
-        std::cout << particle_pdg->GetName() << " " << b_GEM_SimHit_pdgId << std::endl;    
+        std::cout << particle_pdg->GetName() << " " << b_GEM_SimHit_pdgId << " mom pdg : " << b_GEM_SimHit_momPdgId << std::endl;    
       } else {
         std::cout << "Cannot understand!!! " << b_GEM_SimHit_pdgId << std::endl;
       }
   
       b_GEM_SimHit_pt           = vec.perp();
-      b_GEM_SimHit_eta          = vec.eta();
-      b_GEM_SimHit_phi          = sh.phiAtEntry();
-  
+      b_GEM_SimHit_eta          = shGp.eta();
+      b_GEM_SimHit_phi          = shGp.phi();
+      b_GEM_SimHit_E            = sh.pabs();
+
       b_GEM_SimHit_region       = det_id.region();
       b_GEM_SimHit_station      = det_id.station();
       b_GEM_SimHit_ring         = det_id.ring();
@@ -253,12 +292,51 @@ void MuonSimAnalyser::initValue() {
   b_nME0SimHits = -1; b_nGEMSimHits = -1;
 
   /*ME0 */
-  b_ME0_SimHit_region = -9; b_ME0_SimHit_chamber = -9; b_ME0_SimHit_layer = -9; b_ME0_SimHit_etaPartition = -9; b_ME0_SimHit_pdgId = -99;
-  b_ME0_SimHit_pt     = -9; b_ME0_SimHit_eta     = -9; b_ME0_SimHit_phi  = -9;
+  b_ME0_SimHit_region = -9; b_ME0_SimHit_chamber = -9; b_ME0_SimHit_layer = -9; b_ME0_SimHit_etaPartition = -9; b_ME0_SimHit_pdgId = -99; b_ME0_SimHit_momPdgId = -99;
+  b_ME0_SimHit_pt     = -9; b_ME0_SimHit_eta     = -9; b_ME0_SimHit_phi  = -9;  b_ME0_SimHit_E = -9;
 
   /*GEM */
-  b_GEM_SimHit_region = -9; b_GEM_SimHit_station = -9; b_GEM_SimHit_ring = -9; b_GEM_SimHit_chamber = -9; b_GEM_SimHit_layer = -9; b_GEM_SimHit_etaPartition = -9; b_GEM_SimHit_pdgId = -99;
-  b_GEM_SimHit_pt     = -9; b_GEM_SimHit_eta     = -9; b_GEM_SimHit_phi  = -9;
+  b_GEM_SimHit_region = -9; b_GEM_SimHit_station = -9; b_GEM_SimHit_ring = -9; b_GEM_SimHit_chamber = -9; b_GEM_SimHit_layer = -9; b_GEM_SimHit_etaPartition = -9; b_GEM_SimHit_pdgId = -99; b_GEM_SimHit_momPdgId = -99;
+  b_GEM_SimHit_pt     = -9; b_GEM_SimHit_eta     = -9; b_GEM_SimHit_phi  = -9; b_GEM_SimHit_E = -9;
+}
+
+bool MuonSimAnalyser::isSimTrackGood(const SimTrack &t, int pdg, detType detName) {
+  // SimTrack selection
+  if (t.noVertex()) return false;
+  //if (t.noGenpart()) return false;
+  if (pdg != -1 ) {
+    if (t.type() != pdg) return false; // only interested in pdg matched particle
+  }
+  //if (t.momentum().pt() < minPt_ ) return false;
+  const float eta(std::abs(t.momentum().eta()));
+  if (detName == DET_GEM) {
+    if (eta > GEM_maxEta_ || eta < GEM_minEta_ ) return false; // no GEMs could be in such eta
+  } else if (detName == DET_ME0) {
+    if (eta > ME0_maxEta_ || eta < ME0_minEta_ ) return false; // no ME0 could be in such eta
+  }
+  return true;
+}
+
+std::tuple<SimTrack, unsigned int, unsigned int, int> MuonSimAnalyser::matchSimHitToSimTrack(const PSimHit & sh, const edm::SimTrackContainer & sim_track, int pdg, detType detName) {
+  int pdgId = sh.particleType();
+  for (auto & trk : sim_track) {
+    if (!isSimTrackGood(trk, pdg, detName)) continue;
+    if (sh.trackId() != trk.trackId()) continue;
+    return std::make_tuple(trk, trk.vertIndex(), trk.genpartIndex(), pdgId);
+  }
+  return std::make_tuple(SimTrack(), -1, -1, pdgId);
+}
+
+int MuonSimAnalyser::getMotherPdgId(const SimTrack & trk, const edm::PSimHitContainer & sim_hit, const edm::SimVertexContainer & sim_vertex){
+  unsigned int p_vtx_id = 0;
+  for (auto & vtx : sim_vertex) {
+    if (vtx.noParent()) continue;
+    if((int)vtx.vertexId() == trk.vertIndex()) p_vtx_id = vtx.parentIndex();
+  }
+  for (auto & sh : sim_hit) {
+    if (sh.trackId() == p_vtx_id) return sh.particleType();
+  } 
+  return -999;
 }
 
 //define this as a plug-in
